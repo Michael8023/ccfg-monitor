@@ -1,0 +1,528 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# ============================================================
+# 配置文件所在目录
+#
+# 方式一：直接修改下面这一行
+# CONFIG_DIR="/你的配置目录"
+#
+# 方式二：运行时通过环境变量指定：
+# CCR_CONFIG_DIR=/你的配置目录 ccfg cc
+# ============================================================
+COMMAND_NAME="$(basename "$0")"
+CONFIG_DIR="${CCR_CONFIG_DIR:-$HOME/.codex}"
+
+# 本脚本与 scripts/ccfg_monitor.py 位于同一仓库，
+# 通过脚本自身位置定位（支持软链接安装）。
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "$0")"
+SELF_DIR="$(dirname "$SELF_PATH")"
+MONITOR_SCRIPT="${CCFG_MONITOR_SCRIPT:-$SELF_DIR/scripts/ccfg_monitor.py}"
+
+ACTIVE_AUTH="$CONFIG_DIR/auth.json"
+ACTIVE_CONFIG="$CONFIG_DIR/config.toml"
+ACTIVE_MARKER="$CONFIG_DIR/.active-profile"
+LOCK_FILE="$CONFIG_DIR/.config-switch.lock"
+
+die() {
+    echo "错误：$*" >&2
+    exit 1
+}
+
+info() {
+    echo "==> $*"
+}
+
+run_monitor() {
+    [[ -f "$MONITOR_SCRIPT" ]] ||
+        die "找不到监控插件：$MONITOR_SCRIPT"
+    command -v python3 >/dev/null 2>&1 ||
+        die "监控命令需要 python3"
+
+    python3 "$MONITOR_SCRIPT" --config-dir "$CONFIG_DIR" "$@"
+}
+
+check_config_dir() {
+    [[ -d "$CONFIG_DIR" ]] || die "配置目录不存在：$CONFIG_DIR"
+    [[ -w "$CONFIG_DIR" ]] || die "配置目录不可写：$CONFIG_DIR"
+}
+
+validate_profile_name() {
+    local profile="$1"
+
+    [[ -n "$profile" ]] || die "平台名称不能为空"
+
+    # 防止传入路径，例如 ../../xxx
+    [[ "$profile" =~ ^[a-zA-Z0-9._-]+$ ]] ||
+        die "非法平台名称：$profile"
+}
+
+# 一次性完成 switch 所需的全部校验与临时文件生成：
+#  1. 校验源 auth.json 是合法 JSON
+#  2. 校验源 config_<平台>.toml 是合法 TOML
+#  3. 把活动配置中的运行时字段（plugins / mcp_servers）合并进目标配置
+#  4. 校验合并结果并写入临时文件
+# tomlkit 缺失时降级：跳过合并，保留原始目标配置并给出警告。
+prepare_switch_files() {
+    local source_auth="$1"
+    local source_config="$2"
+    local active_config="$3"
+    local temp_auth="$4"
+    local temp_config="$5"
+
+    python3 - "$source_auth" "$source_config" "$active_config" "$temp_auth" "$temp_config" <<'PY'
+import json
+import os
+import shutil
+import sys
+
+source_auth, source_config, active_config, temp_auth, temp_config = sys.argv[1:]
+
+# 1. 校验 auth 并复制
+try:
+    with open(source_auth, "r", encoding="utf-8") as f:
+        json.load(f)
+except Exception as exc:
+    print(f"JSON 格式错误：{source_auth}\n{exc}", file=sys.stderr)
+    sys.exit(1)
+shutil.copyfile(source_auth, temp_auth)
+os.chmod(temp_auth, 0o600)
+
+# 2. 校验源 TOML（tomllib 不可用时回退到 tomli）
+has_tomllib = False
+try:
+    import tomllib  # Python 3.11+
+    has_tomllib = True
+except ImportError:
+    try:
+        import tomli as tomllib  # Python <3.11
+        has_tomllib = True
+    except ImportError:
+        print("警告：未找到 tomllib/tomli，跳过 TOML 格式检查。", file=sys.stderr)
+if has_tomllib:
+    try:
+        with open(source_config, "rb") as f:
+            tomllib.load(f)
+    except Exception as exc:
+        print(f"TOML 格式错误：{source_config}\n{exc}", file=sys.stderr)
+        sys.exit(1)
+
+# 3. 合并活动配置的运行时字段
+merged = False
+if os.path.isfile(active_config):
+    try:
+        import copy
+        import tomlkit
+        with open(active_config, "r", encoding="utf-8") as handle:
+            active = tomlkit.parse(handle.read())
+        with open(source_config, "r", encoding="utf-8") as handle:
+            target = tomlkit.parse(handle.read())
+        for key in ("plugins", "mcp_servers"):
+            if key in active:
+                target[key] = copy.deepcopy(active[key])
+                merged = True
+        if merged:
+            rendered = tomlkit.dumps(target)
+            try:
+                with open(temp_config, "w", encoding="utf-8") as handle:
+                    handle.write(rendered)
+            except Exception as exc:
+                print(f"写入临时配置失败：{exc}", file=sys.stderr)
+                sys.exit(1)
+    except ImportError:
+        print("警告：未找到 tomlkit，无法保留活动配置中的 plugins/mcp_servers。",
+              file=sys.stderr)
+    except Exception as exc:
+        print(f"警告：合并运行时配置失败，将使用原始目标配置：{exc}", file=sys.stderr)
+
+# 4. 未合并时直接复制源配置
+if not merged:
+    shutil.copyfile(source_config, temp_config)
+os.chmod(temp_config, 0o600)
+
+# 5. 校验最终临时配置
+if has_tomllib:
+    try:
+        with open(temp_config, "rb") as f:
+            tomllib.load(f)
+    except Exception as exc:
+        print(f"TOML 格式错误：{temp_config}\n{exc}", file=sys.stderr)
+        sys.exit(1)
+PY
+}
+
+configs_match_profile() {
+    local profile_config="$1"
+    local active_config="$2"
+
+    python3 - "$profile_config" "$active_config" <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+def normalized(path):
+    with open(path, "rb") as handle:
+        data = tomllib.load(handle)
+    # Codex manages these global integrations in the active config only.
+    for key in ("plugins", "mcp_servers"):
+        data.pop(key, None)
+    return data
+
+try:
+    matches = normalized(sys.argv[1]) == normalized(sys.argv[2])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if matches else 1)
+PY
+}
+
+list_profiles() {
+    local auth_file
+    local filename
+    local profile
+    local found=0
+
+    printf "%-20s %s\n" "平台" "状态"
+    printf "%-20s %s\n" "--------------------" "--------"
+
+    shopt -s nullglob
+
+    for auth_file in "$CONFIG_DIR"/auth_*.json; do
+        filename="$(basename "$auth_file")"
+        profile="${filename#auth_}"
+        profile="${profile%.json}"
+
+        if [[ -f "$CONFIG_DIR/config_${profile}.toml" ]]; then
+            printf "%-20s %s\n" "$profile" "可用"
+            found=1
+        else
+            printf "%-20s %s\n" "$profile" "缺少 config_${profile}.toml"
+        fi
+    done
+
+    shopt -u nullglob
+
+    if [[ "$found" -eq 0 ]]; then
+        echo
+        echo "没有找到完整的平台配置。"
+        echo "配置文件需要满足："
+        echo "  auth_<平台>.json"
+        echo "  config_<平台>.toml"
+    fi
+}
+
+find_current_profile() {
+    local profile
+    local auth_source
+    local config_source
+
+    # 优先检查上一次切换时记录的平台
+    if [[ -f "$ACTIVE_MARKER" ]]; then
+        profile="$(<"$ACTIVE_MARKER")"
+        auth_source="$CONFIG_DIR/auth_${profile}.json"
+        config_source="$CONFIG_DIR/config_${profile}.toml"
+
+        if [[ -f "$auth_source" ]] &&
+           [[ -f "$config_source" ]] &&
+           [[ -f "$ACTIVE_AUTH" ]] &&
+           [[ -f "$ACTIVE_CONFIG" ]] &&
+           cmp -s "$auth_source" "$ACTIVE_AUTH" &&
+           configs_match_profile "$config_source" "$ACTIVE_CONFIG"; then
+            echo "$profile"
+            return 0
+        fi
+    fi
+
+    # Marker 不存在或已失效时，扫描全部配置
+    shopt -s nullglob
+
+    for auth_source in "$CONFIG_DIR"/auth_*.json; do
+        profile="$(basename "$auth_source")"
+        profile="${profile#auth_}"
+        profile="${profile%.json}"
+        config_source="$CONFIG_DIR/config_${profile}.toml"
+
+        [[ -f "$config_source" ]] || continue
+        [[ -f "$ACTIVE_AUTH" ]] || continue
+        [[ -f "$ACTIVE_CONFIG" ]] || continue
+
+        if cmp -s "$auth_source" "$ACTIVE_AUTH" &&
+           configs_match_profile "$config_source" "$ACTIVE_CONFIG"; then
+            echo "$profile"
+            shopt -u nullglob
+            return 0
+        fi
+    done
+
+    shopt -u nullglob
+
+    # 兜底：marker 指向的分组 auth 完全一致，仅 config.toml 有漂移
+    # （例如 Codex 应用或用户修改过 config.toml 中的设置）。
+    # 此时仍报告该分组，但注明差异，避免误导为“没有活动分组”。
+    if [[ -f "$ACTIVE_MARKER" ]]; then
+        local marker_profile
+        marker_profile="$(<"$ACTIVE_MARKER")"
+        if [[ -f "$CONFIG_DIR/auth_${marker_profile}.json" ]] &&
+           [[ -f "$CONFIG_DIR/config_${marker_profile}.toml" ]] &&
+           cmp -s "$CONFIG_DIR/auth_${marker_profile}.json" "$ACTIVE_AUTH"; then
+            echo "$marker_profile（config.toml 与该分组配置有差异，可能被 Codex 修改）"
+            return 0
+        fi
+    fi
+
+    echo "未知（当前文件可能被手动修改）"
+}
+
+# 清理历史上中断切换留下的临时文件（可能含有密钥，必须一并删除）
+cleanup_stale_tmp() {
+    local pattern
+    local count=0
+
+    shopt -s nullglob
+
+    for pattern in "$CONFIG_DIR"/.auth.json.tmp.* \
+                   "$CONFIG_DIR"/.config.toml.tmp.* \
+                   "$CONFIG_DIR"/.active-profile.tmp.*; do
+        rm -f "$pattern"
+        count=$((count + 1))
+    done
+
+    shopt -u nullglob
+    printf '%s' "$count"
+}
+
+switch_profile() {
+    local profile="$1"
+    local source_auth
+    local source_config
+    local temp_auth=""
+    local temp_config=""
+    local temp_marker=""
+    local removed
+
+    validate_profile_name "$profile"
+
+    source_auth="$CONFIG_DIR/auth_${profile}.json"
+    source_config="$CONFIG_DIR/config_${profile}.toml"
+
+    [[ -f "$source_auth" ]] ||
+        die "找不到认证配置：$source_auth"
+
+    [[ -f "$source_config" ]] ||
+        die "找不到程序配置：$source_config"
+
+    # 防止多个切换命令同时执行
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$LOCK_FILE"
+        flock -x 9
+    fi
+
+    # 清理之前中断切换留下的临时文件（含密钥）
+    removed="$(cleanup_stale_tmp)"
+    if [[ "$removed" -gt 0 ]]; then
+        info "清理了 $removed 个上次中断留下的临时文件"
+    fi
+
+    info "检查平台配置：$profile"
+
+    # 先写入临时文件，全部成功后再替换正式文件
+    temp_auth="$(mktemp "$CONFIG_DIR/.auth.json.tmp.XXXXXX")"
+    temp_config="$(mktemp "$CONFIG_DIR/.config.toml.tmp.XXXXXX")"
+    temp_marker="$(mktemp "$CONFIG_DIR/.active-profile.tmp.XXXXXX")"
+
+    cleanup() {
+        [[ -n "$temp_auth" ]] && rm -f "$temp_auth"
+        [[ -n "$temp_config" ]] && rm -f "$temp_config"
+        [[ -n "$temp_marker" ]] && rm -f "$temp_marker"
+    }
+
+    trap cleanup EXIT INT TERM
+
+    # 校验并生成临时文件（单次 python3 调用，权限均设为 600）
+    if ! prepare_switch_files \
+        "$source_auth" "$source_config" "$ACTIVE_CONFIG" \
+        "$temp_auth" "$temp_config"; then
+        die "配置校验或生成失败：$profile"
+    fi
+    chmod 600 "$temp_marker"
+    printf '%s\n' "$profile" > "$temp_marker"
+
+    # 替换实际生效的配置
+    mv -f "$temp_auth" "$ACTIVE_AUTH"
+    temp_auth=""
+
+    mv -f "$temp_config" "$ACTIVE_CONFIG"
+    temp_config=""
+
+    mv -f "$temp_marker" "$ACTIVE_MARKER"
+    temp_marker=""
+
+    trap - EXIT INT TERM
+
+    echo
+    echo "配置切换成功：$profile"
+    echo "  $source_auth"
+    echo "    -> $ACTIVE_AUTH"
+    echo "  $source_config"
+    echo "    -> $ACTIVE_CONFIG"
+}
+
+show_help() {
+    cat <<EOF
+用法：
+
+  $COMMAND_NAME list
+  $COMMAND_NAME add <分组名> [--base-url URL] [--api-key KEY] [--model M]
+  $COMMAND_NAME remove <分组名> ...
+  $COMMAND_NAME current
+  $COMMAND_NAME status [平台 ...]
+  $COMMAND_NAME models <平台>
+  $COMMAND_NAME test
+  $COMMAND_NAME use <平台> [模型]
+  $COMMAND_NAME model <模型> [--profile <平台>]
+  $COMMAND_NAME doctor
+  $COMMAND_NAME switch <平台>
+  $COMMAND_NAME cleanup
+  $COMMAND_NAME <平台>
+  $COMMAND_NAME help
+
+示例：
+
+  $COMMAND_NAME status
+  $COMMAND_NAME status 47 luming
+  $COMMAND_NAME models 47
+  $COMMAND_NAME test
+  $COMMAND_NAME use 47 gpt-5.6-sol
+  $COMMAND_NAME model gpt-5.6-terra
+  $COMMAND_NAME add newkey
+  $COMMAND_NAME add newkey --base-url https://api.example.com/v1 --api-key sk-xxx
+  $COMMAND_NAME remove cc_welfare
+  $COMMAND_NAME list
+  $COMMAND_NAME current
+  $COMMAND_NAME cleanup
+  $COMMAND_NAME 47
+
+说明：
+
+  status 只在执行命令时刷新，不运行后台服务。
+  models 优先读取 /v1/models，失败时回退到 usage 历史模型。
+  test 依次选择平台、模型和测试内容；图片保存到当前目录。
+  use 和 model 均为手动切换，不会自动选择接口。
+  cleanup 清理切换中断后残留的临时文件（可能包含密钥）。
+  add 新建分组：交互输入 base_url 和 API Key；相同 base_url 归入同一平台。
+  remove 删除分组：相同 base_url 下多个分组互不影响，可单独删除。
+  list 按平台（base_url）分组显示所有分组，* 标记当前活动分组。
+
+当前配置目录：
+
+  $CONFIG_DIR
+
+可通过环境变量临时指定目录：
+
+  CCR_CONFIG_DIR=/path/to/config $COMMAND_NAME cc
+EOF
+}
+
+main() {
+    check_config_dir
+
+    case "${1:-help}" in
+        list | ls)
+            shift
+            run_monitor list "$@"
+            ;;
+
+        add)
+            [[ $# -ge 2 ]] || die "用法：$COMMAND_NAME add <分组名> [--base-url URL] [--api-key KEY] [--model M]"
+            shift
+            run_monitor add "$@"
+            ;;
+
+        remove | rm)
+            [[ $# -ge 2 ]] || die "用法：$COMMAND_NAME remove <分组名> ..."
+            shift
+            run_monitor remove "$@"
+            ;;
+
+        current)
+            echo "当前平台：$(find_current_profile)"
+            ;;
+
+        status)
+            shift
+            run_monitor status "$@"
+            ;;
+
+        models)
+            [[ $# -ge 2 ]] || die "请指定平台，例如：$COMMAND_NAME models 47"
+            shift
+            run_monitor models "$@"
+            ;;
+
+        test)
+            shift
+            run_monitor test "$@"
+            ;;
+
+        model)
+            [[ $# -ge 2 ]] || die "请指定模型，例如：$COMMAND_NAME model gpt-5.6-sol"
+            shift
+            run_monitor model "$@"
+            ;;
+
+        doctor)
+            shift
+            run_monitor doctor "$@"
+            ;;
+
+        use)
+            [[ $# -ge 2 ]] || die "请指定平台，例如：$COMMAND_NAME use 47"
+            [[ $# -le 3 ]] || die "用法：$COMMAND_NAME use <平台> [模型]"
+            if [[ $# -eq 3 ]]; then
+                run_monitor model "$3" --profile "$2"
+            fi
+            switch_profile "$2"
+            ;;
+
+        switch)
+            [[ $# -eq 2 ]] || die "用法：$COMMAND_NAME switch <平台>"
+            switch_profile "$2"
+            ;;
+
+        cleanup)
+            local removed
+            # 与 switch 共用同一把锁，避免清理正在进行的切换的临时文件
+            if command -v flock >/dev/null 2>&1; then
+                exec 9>"$LOCK_FILE"
+                flock -x 9
+            fi
+            removed="$(cleanup_stale_tmp)"
+            if [[ "$removed" -gt 0 ]]; then
+                echo "已清理 $removed 个残留的临时文件。"
+            else
+                echo "没有需要清理的临时文件。"
+            fi
+            ;;
+
+        help | --help | -h)
+            show_help
+            ;;
+
+        *)
+            # 支持简写：$COMMAND_NAME cc
+            # 只有参数看起来是合法平台名且配置存在时才视为平台切换
+            if [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] &&
+               [[ -f "$CONFIG_DIR/auth_${1}.json" ]] &&
+               [[ -f "$CONFIG_DIR/config_${1}.toml" ]]; then
+                switch_profile "$1"
+            else
+                die "未知命令：$1（运行 $COMMAND_NAME help 查看用法）"
+            fi
+            ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,25 @@
+{
+  "name": "ccfg-monitor",
+  "version": "0.1.0+codex.20260730052704",
+  "description": "Monitor quota and effective multipliers, test, and switch ccfg API providers.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Ccfg Monitor",
+    "shortDescription": "Monitor API quota and switch ccfg profiles.",
+    "longDescription": "Refresh balances, usage, authentication health, and model availability, test text or image generation connectivity, then manually switch providers or models.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "\u68c0\u67e5\u6240\u6709 ccfg \u63a5\u53e3\u7684\u989d\u5ea6\u548c\u53ef\u7528\u6a21\u578b\u3002",
+      "\u9009\u62e9 ccfg \u5e73\u53f0\u548c\u6a21\u578b\u6d4b\u8bd5\u8fde\u901a\u6027\u3002",
+      "\u663e\u793a\u5f53\u524d\u63a5\u53e3\u5e76\u5e2e\u6211\u624b\u52a8\u5207\u6362\u6a21\u578b\u3002"
+    ]
+  }
+}
