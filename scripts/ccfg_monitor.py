@@ -8,7 +8,10 @@ import base64
 import concurrent.futures
 import contextlib
 import copy
-import fcntl
+try:
+    import fcntl  # Unix 文件锁；Windows 原生 Python 无此模块
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 import json
 import os
 import re
@@ -889,7 +892,8 @@ def set_model(config_dir: Path, profile_name: str, model: str) -> None:
         raise CcfgError("修改模型需要 Python 包 tomlkit") from exc
     lock_path = config_dir / ".config-switch.lock"
     with lock_path.open("a", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if fcntl is not None:  # Windows 原生 Python 无 fcntl，跳过文件锁
+            fcntl.flock(lock, fcntl.LOCK_EX)
         source_text = profile.config_path.read_text(encoding="utf-8")
         document = tomlkit.parse(source_text)
         document["model"] = model
@@ -1156,7 +1160,8 @@ def cmd_remove(args: argparse.Namespace) -> int:
 
     lock_path = args.config_dir / ".config-switch.lock"
     with lock_path.open("a", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if fcntl is not None:  # Windows 原生 Python 无 fcntl，跳过文件锁
+            fcntl.flock(lock, fcntl.LOCK_EX)
         for name in names:
             (args.config_dir / f"auth_{name}.json").unlink(missing_ok=True)
             (args.config_dir / f"config_{name}.toml").unlink(missing_ok=True)

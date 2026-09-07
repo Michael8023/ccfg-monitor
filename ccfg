@@ -16,7 +16,10 @@ CONFIG_DIR="${CCR_CONFIG_DIR:-$HOME/.codex}"
 
 # 本脚本与 scripts/ccfg_monitor.py 位于同一仓库，
 # 通过脚本自身位置定位（支持软链接安装）。
-SELF_PATH="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "$0")"
+# 用 python3 解析真实路径：Linux/macOS/Windows 通用
+# （macOS 的 BSD readlink 不支持 -f）。
+SELF_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' \
+    "${BASH_SOURCE[0]:-$0}" 2>/dev/null || printf '%s' "$0")"
 SELF_DIR="$(dirname "$SELF_PATH")"
 MONITOR_SCRIPT="${CCFG_MONITOR_SCRIPT:-$SELF_DIR/scripts/ccfg_monitor.py}"
 

@@ -5,7 +5,7 @@ description: Monitor balances, usage, authentication health, and available model
 
 # Ccfg Monitor
 
-Use `ccfg` as the single command entry point (installed to `~/.local/bin/ccfg` via `./install.sh` in the repo; resolve its real location with `command -v ccfg`). The default configuration directory is `$HOME/.codex`; respect `CCR_CONFIG_DIR` when the user supplies it. The installed entry locates its Python monitor relative to its own path, so a symlink install works unchanged.
+Use `ccfg` as the single command entry point (installed to `~/.local/bin/ccfg` via `./install.sh` in the repo; resolve its real location with `command -v ccfg`). The default configuration directory is `$HOME/.codex`; respect `CCR_CONFIG_DIR` when the user supplies it (bash and the Python monitor resolve it identically). The installed entry locates its Python monitor relative to its own path, so a symlink install works unchanged. Cross-platform: Linux and macOS are fully supported (path resolution uses Python `realpath`, not BSD `readlink -f`); Windows works under WSL, or under Git Bash/MSYS2 with lock protection degrading automatically when `flock`/`fcntl` are unavailable.
 
 ## Read-only operations
 
