@@ -27,6 +27,15 @@
 - **模型可用性排查**：怀疑某平台模型列表或生成接口有问题时，`ccfg models` / `ccfg test` 直接验证
 - **Codex 日常换模型**：`ccfg model <模型>` 直接改活动配置的模型，配合 Codex CLI 使用
 
+## 推荐的中转站
+
+以下是我自用的大模型 API 中转站（均为第三方服务，**非本人运营，仅作个人推荐**；通过推荐链接注册可以支持一下作者）：
+
+- 🚀 **[aicyy.xyz](https://aicyy.xyz/register?aff=GUEJU9C6W289)** — 大模型 API 中转平台，聚合多家主流模型，注册即用
+- ⚡ **[XTokenMirror](https://www.xtokenmirror.com/register?aff=PSY4ZUM49X8T)** — 大模型 API 中转服务，接入便捷、按量计费
+
+> 💡 拿到中转站的 `base_url` 和 API key 后，直接用 `ccfg add <分组> --base-url <URL>` 加入管理，即可用 `ccfg status` 监控额度、`ccfg use` 一键切换。
+
 ## 介绍
 
 ### 它是什么
