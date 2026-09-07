@@ -242,7 +242,7 @@ class CcfgMonitorTests(unittest.TestCase):
         # 应视为可用（无额度接口），而非"接口不存在"。
         profile = ccfg.Profile(
             "demo", Path("auth.json"), Path("config.toml"),
-            "https://frimodel.test/v1", "gpt-5.6-sol", "test-key"
+            "https://provider.test/v1", "gpt-5.6-sol", "test-key"
         )
         with mock.patch.object(
             ccfg, "request_json",
@@ -278,7 +278,7 @@ class CcfgMonitorTests(unittest.TestCase):
         # models 命令不应因 usage 失败而输出警告
         row = {
             "profile": "demo",
-            "host": "frimodel.test",
+            "host": "provider.test",
             "current_model": "gpt-5.6-sol",
             "model_source": "/v1/models",
             "models": ["gpt-5.5", "gpt-5.6-sol"],
@@ -295,8 +295,8 @@ class CcfgMonitorTests(unittest.TestCase):
         self.assertNotIn("usage", stderr.getvalue())
 
     def test_host_of_groups_by_base_url(self):
-        self.assertEqual(ccfg.host_of("https://aicyy.xyz/v1"), "aicyy.xyz")
-        self.assertEqual(ccfg.host_of("https://api.xtokenmirror.com"), "api.xtokenmirror.com")
+        self.assertEqual(ccfg.host_of("https://api.deepseek.com/v1"), "api.deepseek.com")
+        self.assertEqual(ccfg.host_of("https://api.openai.com"), "api.openai.com")
 
     def test_profile_platforms_groups_same_base_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -305,20 +305,20 @@ class CcfgMonitorTests(unittest.TestCase):
                 (root / f"auth_{name}.json").write_text(
                     json.dumps({"OPENAI_API_KEY": "test-key"}), encoding="utf-8"
                 )
-                base = "https://aicyy.xyz" if name.startswith("cc_") else "https://api.frimodel.com/v1"
+                base = "https://api.deepseek.com" if name.startswith("cc_") else "https://api.openai.com/v1"
                 (root / f"config_{name}.toml").write_text(
                     f'model = "m"\nmodel_provider = "p"\n\n[model_providers.p]\nbase_url = "{base}"\n',
                     encoding="utf-8",
                 )
             groups = ccfg.profile_platforms(root, ["cc_pro", "cc_standard", "cc_welfare", "baiz"])
-            self.assertEqual(set(groups.keys()), {"aicyy.xyz", "api.frimodel.com"})
-            self.assertEqual(len(groups["aicyy.xyz"]), 3)
-            self.assertEqual(len(groups["api.frimodel.com"]), 1)
+            self.assertEqual(set(groups.keys()), {"api.deepseek.com", "api.openai.com"})
+            self.assertEqual(len(groups["api.deepseek.com"]), 3)
+            self.assertEqual(len(groups["api.openai.com"]), 1)
 
     def test_valid_base_url_rejects_bad_url(self):
         with self.assertRaises(ccfg.CcfgError):
             ccfg.valid_base_url("not-a-url")
-        self.assertEqual(ccfg.valid_base_url(" https://aicyy.xyz/ "), "https://aicyy.xyz")
+        self.assertEqual(ccfg.valid_base_url(" https://api.deepseek.com/ "), "https://api.deepseek.com")
 
     def test_cmd_add_creates_profile(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -363,7 +363,7 @@ class CcfgMonitorTests(unittest.TestCase):
                     json.dumps({"OPENAI_API_KEY": "k"}), encoding="utf-8"
                 )
                 (root / f"config_{name}.toml").write_text(
-                    'model = "m"\nmodel_provider = "p"\n\n[model_providers.p]\nbase_url = "https://aicyy.xyz"\n',
+                    'model = "m"\nmodel_provider = "p"\n\n[model_providers.p]\nbase_url = "https://api.deepseek.com"\n',
                     encoding="utf-8",
                 )
             (root / ".active-profile").write_text("cc_standard\n", encoding="utf-8")
@@ -383,7 +383,7 @@ class CcfgMonitorTests(unittest.TestCase):
             root = Path(temp_dir)
             (root / "auth_demo.json").write_text("{}", encoding="utf-8")
             (root / "config_demo.toml").write_text(
-                'model = "m"\nmodel_provider = "p"\n\n[model_providers.p]\nbase_url = "https://aicyy.xyz"\n',
+                'model = "m"\nmodel_provider = "p"\n\n[model_providers.p]\nbase_url = "https://api.deepseek.com"\n',
                 encoding="utf-8",
             )
             args = argparse.Namespace(config_dir=root, profiles=["demo"])
@@ -396,9 +396,9 @@ class CcfgMonitorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             for name, base in (
-                ("cc_pro", "https://aicyy.xyz"),
-                ("cc_welfare", "https://aicyy.xyz"),
-                ("xtoken", "https://api.xtokenmirror.com"),
+                ("cc_pro", "https://api.deepseek.com"),
+                ("cc_welfare", "https://api.deepseek.com"),
+                ("xtoken", "https://api.openai.com"),
             ):
                 (root / f"auth_{name}.json").write_text(
                     json.dumps({"OPENAI_API_KEY": "k"}), encoding="utf-8"
@@ -412,26 +412,26 @@ class CcfgMonitorTests(unittest.TestCase):
             with redirect_stdout(output):
                 ccfg.cmd_list(argparse.Namespace(config_dir=root))
             rendered = output.getvalue()
-            self.assertIn("aicyy.xyz（2 个分组）", rendered)
-            self.assertIn("api.xtokenmirror.com（1 个分组）", rendered)
+            self.assertIn("api.deepseek.com（2 个分组）", rendered)
+            self.assertIn("api.openai.com（1 个分组）", rendered)
             self.assertIn("可用 *", rendered)
 
     def test_status_table_shows_platform_groups(self):
         rows = [
             {
-                "profile": "cc_pro", "host": "aicyy.xyz", "status": "正常",
+                "profile": "cc_pro", "host": "api.deepseek.com", "status": "正常",
                 "auth_valid": True, "remaining": 5.0, "balance": 5.0, "unit": "USD",
                 "today_cost": 0.1, "today_requests": 1, "usage_latency_ms": 10,
                 "effective_multiplier": 0.25, "current_model": "gpt-test", "errors": [],
             },
             {
-                "profile": "cc_welfare", "host": "aicyy.xyz", "status": "正常",
+                "profile": "cc_welfare", "host": "api.deepseek.com", "status": "正常",
                 "auth_valid": True, "remaining": 5.0, "balance": 5.0, "unit": "USD",
                 "today_cost": 0.1, "today_requests": 1, "usage_latency_ms": 10,
                 "effective_multiplier": 0.25, "current_model": "gpt-test", "errors": [],
             },
             {
-                "profile": "xtoken", "host": "api.xtokenmirror.com", "status": "正常",
+                "profile": "xtoken", "host": "api.openai.com", "status": "正常",
                 "auth_valid": True, "remaining": 5.0, "balance": 5.0, "unit": "USD",
                 "today_cost": 0.1, "today_requests": 1, "usage_latency_ms": 10,
                 "effective_multiplier": 0.25, "current_model": "gpt-test", "errors": [],
@@ -441,14 +441,14 @@ class CcfgMonitorTests(unittest.TestCase):
         with redirect_stdout(output):
             ccfg.print_status(rows, "cc_welfare")
         rendered = output.getvalue()
-        self.assertIn("平台：aicyy.xyz（2 个分组）", rendered)
-        self.assertIn("平台：api.xtokenmirror.com（1 个分组）", rendered)
+        self.assertIn("平台：api.deepseek.com（2 个分组）", rendered)
+        self.assertIn("平台：api.openai.com（1 个分组）", rendered)
         self.assertIn("2 个平台", rendered)
 
     def test_query_dashboard_balance_calculates_remaining(self):
         profile = ccfg.Profile(
             "demo", Path("auth.json"), Path("config.toml"),
-            "https://frimodel.test/v1", "gpt-5.6-sol", "test-key"
+            "https://provider.test/v1", "gpt-5.6-sol", "test-key"
         )
         with mock.patch.object(
             ccfg, "request_json",
@@ -480,7 +480,7 @@ class CcfgMonitorTests(unittest.TestCase):
         # -> 状态正常，余额来自 dashboard billing
         profile = ccfg.Profile(
             "demo", Path("auth.json"), Path("config.toml"),
-            "https://frimodel.test/v1", "gpt-5.6-sol", "test-key"
+            "https://provider.test/v1", "gpt-5.6-sol", "test-key"
         )
         results = [
             ccfg.ApiResult(False, 404, None, 100, "接口不存在"),

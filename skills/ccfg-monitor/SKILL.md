@@ -30,7 +30,7 @@ For non-interactive testing, use `ccfg test --profile <profile> --model <model> 
 
 ## Platforms, groups, add, and remove
 
-A platform is identified by its `base_url`; profiles sharing the same `base_url` are groups of the same platform (e.g. `cc_pro`, `cc_standard`, `cc_welfare` → `aicyy.xyz`). `ccfg list` and `ccfg status` group by platform automatically.
+A platform is identified by its `base_url`; profiles sharing the same `base_url` are groups of the same platform (e.g. several groups all pointing at `api.deepseek.com` belong to the DeepSeek platform). `ccfg list` and `ccfg status` group by platform automatically.
 
 - Create a new group with `ccfg add <profile>`: it prompts for `base_url` and API key. For non-interactive use, pass `--base-url`, `--api-key`, and optionally `--model`. It refuses to overwrite an existing profile and warns when the `base_url` matches an existing platform.
 - Delete groups with `ccfg remove <profile> ...`: the user is asked to confirm. Deleting the active group auto-switches to the remaining group, or clears the active config when no group remains.

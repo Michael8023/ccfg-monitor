@@ -315,7 +315,7 @@ def effective_multiplier(model_stats: Any, current_model: str) -> tuple[float | 
 def query_dashboard_balance(profile: Profile, timeout: float) -> tuple[float, str] | None:
     """通过 OpenAI dashboard billing 接口查询剩余额度。
 
-    部分平台（如 frimodel）不提供 /v1/usage，但兼容标准 billing 接口：
+    部分平台不提供 /v1/usage，但兼容标准 billing 接口：
       GET /v1/dashboard/billing/subscription  -> hard/soft_limit_usd（美元）
       GET /v1/dashboard/billing/usage         -> total_usage（美分）
     剩余额度 = limit_usd - total_usage / 100。
@@ -572,7 +572,7 @@ def query_profile(profile: Profile, timeout: float) -> dict[str, Any]:
     multiplier, multiplier_source = effective_multiplier(model_stats, profile.model)
 
     # 认证有效性：usage 有效或 models 成功任一成立即可。
-    # 部分平台（如 frimodel）只提供 /v1/models 而没有 /v1/usage，
+    # 部分平台只提供 /v1/models 而没有 /v1/usage，
     # 此时 models 成功即证明密钥有效、平台可用，不应判为不可用。
     usage_ok = bool(usage.ok and valid is not False)
     models_ok = bool(models_result.ok)
