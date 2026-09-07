@@ -137,6 +137,7 @@ mkdir -p "$PREFIX" "$BIN_DIR"
 
 install -m 0755 "$REPO_DIR/ccfg" "$PREFIX/ccfg"
 install -m 0644 "$REPO_DIR/README.md" "$PREFIX/README.md"
+[[ -f "$REPO_DIR/LICENSE" ]] && install -m 0644 "$REPO_DIR/LICENSE" "$PREFIX/LICENSE"
 
 # scripts / skills / .codex-plugin 整目录复制（保留结构，覆盖旧版本）
 for sub in scripts skills .codex-plugin; do
