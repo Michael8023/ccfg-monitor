@@ -89,7 +89,20 @@ CCR_CONFIG_DIR=/path/to/config ccfg cc
 
 ## 跨平台兼容
 
-依赖仅两项：**bash** 与 **python3**（3.8+；3.11+ 自带 `tomllib`，旧版需 `pip install tomli`；可选 `pip install tomlkit`）。
+依赖仅两项：**bash** 与 **python3**。
+
+| Python 版本 | TOML 解析库 | 可用性 |
+|---|---|---|
+| **3.11+** | 自带 `tomllib` | ✅ 开箱即用 |
+| **3.8 – 3.10** | 需装 `tomli` | ⚠️ 未安装时 `list` / `current` / `cleanup` 等本地命令可用；`status` / `add` / `use` / `model` / `test` 会提示安装。**装了才完整可用** |
+
+```bash
+# Python < 3.11 必须安装（共享服务器建议加 --user）
+python3 -m pip install --user tomli
+
+# 可选：切换平台时保留 config.toml 里的 plugins / mcp_servers 字段
+python3 -m pip install --user tomlkit
+```
 
 | 平台 | 支持情况 |
 |---|---|
@@ -108,7 +121,7 @@ CCR_CONFIG_DIR=/path/to/config ccfg cc
 ```bash
 git clone https://github.com/Michael8023/ccfg-monitor.git
 cd ccfg-monitor
-./install.sh
+./install.sh          # 若提示 Permission denied，改用 bash ./install.sh
 ```
 
 安装内容：
@@ -116,6 +129,7 @@ cd ccfg-monitor
 - 核心文件复制到 `~/.local/share/ccfg-monitor`（可用 `--prefix DIR` 或 `CCFG_PREFIX` 覆盖）
 - 在 `~/.local/bin` 创建 `ccfg` 软链接（可用 `--bin-dir DIR` 或 `CCFG_BIN_DIR` 覆盖）
 - 冒烟测试使用临时空配置目录，**不会触碰你的真实配置**
+- **自动检测 PATH**：若 `~/.local/bin` 不在 `PATH` 中，安装结束会给出可直接复制的配置命令
 - 卸载：`./install.sh --uninstall`（只删除软链接与安装目录，保留 `~/.codex` 下的配置与分组）
 
 **更新**：`git pull` 后重新运行 `./install.sh` 即可原地升级。
@@ -123,6 +137,29 @@ cd ccfg-monitor
 > 作为 Codex 插件使用：在 Codex 应用中把本仓库注册为个人插件（或运行 `codex plugins install <仓库路径>`）。插件元数据位于 `.codex-plugin/plugin.json`。
 
 ## 快速开始
+
+### 首次使用（三步）
+
+```bash
+# 1. 创建一个分组（会提示输入 base_url 和 API Key，密钥不回显）
+ccfg add my_group --base-url https://api.example.com/v1
+
+# 2. 查看额度与可用模型
+ccfg status
+
+# 3. 切换到这个分组使用
+ccfg use my_group
+```
+
+> 如果 `ccfg` 提示 `command not found`，说明 `~/.local/bin` 不在 `PATH` 中：
+> ```bash
+> echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+> ```
+>
+> 如果 `ccfg list` 提示没有任何分组，说明配置目录（默认 `~/.codex`）为空，
+> 先执行上面的第 1 步创建分组；若你的配置存放在别处，用 `CCR_CONFIG_DIR=/path/to/config ccfg list` 指定。
+
+### 日常命令
 
 ```bash
 ccfg list                                     # 按平台分组列出所有分组，* 标记当前活动分组

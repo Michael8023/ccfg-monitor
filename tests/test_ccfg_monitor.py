@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from unittest import mock
 from pathlib import Path
@@ -415,6 +415,58 @@ class CcfgMonitorTests(unittest.TestCase):
             self.assertIn("api.deepseek.com（2 个分组）", rendered)
             self.assertIn("api.openai.com（1 个分组）", rendered)
             self.assertIn("可用 *", rendered)
+
+    def test_cmd_list_empty_config_guides_user(self):
+        """配置为空时 list 应给出可操作的引导，而不是只报一句没找到配置。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output, errors = StringIO(), StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                code = ccfg.cmd_list(argparse.Namespace(config_dir=root))
+            rendered = output.getvalue() + errors.getvalue()
+            self.assertEqual(code, 0)
+            self.assertIn("ccfg add", rendered)
+            self.assertIn("还没有任何分组", rendered)
+            self.assertIn(str(root), rendered)
+
+    def test_cmd_status_empty_config_guides_user(self):
+        """配置为空时 status 应返回 1 并提示如何创建分组。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output, errors = StringIO(), StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                code = ccfg.cmd_status(
+                    argparse.Namespace(profiles=[], config_dir=root, timeout=1.0, json=False)
+                )
+            rendered = output.getvalue() + errors.getvalue()
+            self.assertEqual(code, 1)
+            self.assertIn("ccfg add", rendered)
+            self.assertIn("CCR_CONFIG_DIR", rendered)
+
+    def test_require_toml_raises_actionable_error_when_missing(self):
+        """缺少 TOML 解析库时应报出可操作的安装命令，而不是 ImportError 崩溃。"""
+        with mock.patch.object(ccfg, "tomllib", None):
+            with self.assertRaises(ccfg.CcfgError) as ctx:
+                ccfg.require_toml()
+        message = str(ctx.exception)
+        self.assertIn("pip install --user tomli", message)
+        self.assertIn("tomlkit", message)
+
+    def test_require_toml_passes_when_available(self):
+        self.assertIsNone(ccfg.require_toml())
+
+    def test_load_profile_reports_missing_toml_library(self):
+        """无 TOML 库时 load_profile 应给出安装提示，而非 TypeError。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "auth_demo.json").write_text(
+                json.dumps({"OPENAI_API_KEY": "k"}), encoding="utf-8"
+            )
+            (root / "config_demo.toml").write_text('model = "m"\n', encoding="utf-8")
+            with mock.patch.object(ccfg, "tomllib", None):
+                with self.assertRaises(ccfg.CcfgError) as ctx:
+                    ccfg.load_profile(root, "demo")
+            self.assertIn("pip install --user tomli", str(ctx.exception))
 
     def test_status_table_shows_platform_groups(self):
         rows = [

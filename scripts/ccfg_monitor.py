@@ -36,9 +36,29 @@ LOW_BALANCE_THRESHOLD = 1.0
 STALE_TMP_PATTERNS = (".auth.json.tmp.*", ".config.toml.tmp.*", ".active-profile.tmp.*")
 
 try:
-    import tomllib  # Python 3.11+
+    import tomllib  # Python 3.11+ 自带
 except ImportError:  # pragma: no cover - Python <3.11 回退到 tomli
-    import tomli as tomllib  # type: ignore[no-redef]
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        # Python <3.11 且未安装 tomli：不阻断启动，
+        # 让不依赖 TOML 解析的命令（list/help/current/cleanup 等）仍可用，
+        # 需要解析配置的命令通过 require_toml() 给出明确提示。
+        tomllib = None  # type: ignore[assignment]
+
+TOML_INSTALL_HINT = (
+    "缺少 TOML 解析库：当前 Python 为 {version}，未找到 tomllib（3.11+ 自带）或 tomli。\n"
+    "请安装后重试：  python3 -m pip install --user tomli\n"
+    "（可选）保留 plugins/mcp_servers 字段还需：python3 -m pip install --user tomlkit"
+)
+
+
+def require_toml() -> None:
+    """在真正需要解析 TOML 时再检查依赖，缺失则给出可操作的报错。"""
+    if tomllib is None:
+        raise CcfgError(
+            TOML_INSTALL_HINT.format(version=".".join(map(str, sys.version_info[:3])))
+        )
 
 
 class CcfgError(RuntimeError):
@@ -97,6 +117,7 @@ def endpoint_url(base_url: str, resource: str) -> str:
 
 
 def load_profile(config_dir: Path, name: str) -> Profile:
+    require_toml()
     if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         raise CcfgError(f"非法平台名称：{name}")
     auth_path = config_dir / f"auth_{name}.json"
@@ -883,6 +904,7 @@ def atomic_write(path: Path, content: str, mode: int) -> None:
 
 
 def set_model(config_dir: Path, profile_name: str, model: str) -> None:
+    require_toml()
     if not MODEL_RE.fullmatch(model):
         raise CcfgError(f"非法模型名称：{model!r}")
     profile = load_profile(config_dir, profile_name)
@@ -914,10 +936,31 @@ def set_model(config_dir: Path, profile_name: str, model: str) -> None:
             atomic_write(active_config, active_rendered, active_mode)
 
 
+EMPTY_CONFIG_HINT = """还没有任何分组，无法{action}。
+
+创建一个分组（交互式输入 base_url 与 API Key，密钥不回显）：
+  ccfg add <分组名> --base-url https://api.example.com/v1
+
+创建后可运行：
+  ccfg list      查看所有分组
+  ccfg status    刷新额度与可用模型
+  ccfg use <分组名>   切换到这个分组
+
+如果配置不在默认位置（{config_dir}），用环境变量指定：
+  CCR_CONFIG_DIR=/path/to/config ccfg list"""
+
+
+def print_empty_config_hint(config_dir: Path, action: str) -> None:
+    """配置目录下没有任何分组时，给出可操作的下一步引导。"""
+    print(EMPTY_CONFIG_HINT.format(action=action, config_dir=config_dir), file=sys.stderr)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     names = args.profiles or discover_profile_names(args.config_dir)
     if not names:
-        raise CcfgError("没有找到完整的平台配置")
+        require_toml()
+        print_empty_config_hint(args.config_dir, "刷新状态")
+        return 1
     rows = query_many(args.config_dir, names, args.timeout)
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -1078,6 +1121,7 @@ def switch_to_active(config_dir: Path, name: str) -> None:
 
 def cmd_add(args: argparse.Namespace) -> int:
     name = args.profile
+    require_toml()
     if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         raise CcfgError(f"非法平台名称：{name}")
     auth_path = args.config_dir / f"auth_{name}.json"
@@ -1185,7 +1229,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     names = discover_profile_names(args.config_dir)
     current = active_profile(args.config_dir)
     if not names:
-        print("没有找到完整的平台配置。")
+        print_empty_config_hint(args.config_dir, "列出分组")
         return 0
     groups = profile_platforms(args.config_dir, names)
     print(f"当前活动分组：{current or '未知'}")

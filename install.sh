@@ -122,11 +122,34 @@ fi
 
 command -v python3 >/dev/null 2>&1 || die "需要 python3（3.8+；3.11+ 自带 tomllib）"
 
-if ! python3 -c 'import tomllib' >/dev/null 2>&1 && \
-   ! python3 -c 'import tomli' >/dev/null 2>&1; then
-    echo "警告：当前 python3 既没有 tomllib（Python 3.11+）也没有 tomli。"
-    echo "       ccfg 仍可运行，但切换平台时跳过 TOML 格式校验。"
-    echo "       建议安装：pip install tomli （以及可选的 pip install tomlkit，用于保留 plugins/mcp_servers 字段）"
+PY_VERSION="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+HAS_TOML=0
+if python3 -c 'import tomllib' >/dev/null 2>&1 || python3 -c 'import tomli' >/dev/null 2>&1; then
+    HAS_TOML=1
+fi
+HAS_TOMLKIT=0
+if python3 -c 'import tomlkit' >/dev/null 2>&1; then
+    HAS_TOMLKIT=1
+fi
+
+if [[ "$HAS_TOML" -eq 0 ]]; then
+    cat >&2 <<EOF
+警告：当前 python3（$PY_VERSION）没有 TOML 解析库（3.11+ 自带 tomllib，旧版需 tomli）。
+
+  影响：list / help / current / cleanup 等本地命令仍可用；
+        但 status / add / use / model / test 等需要解析配置的命令会报错。
+
+  安装（推荐，共享服务器无需 root）：
+    python3 -m pip install --user tomli
+EOF
+    if [[ "$HAS_TOMLKIT" -eq 0 ]]; then
+        echo "  可选：python3 -m pip install --user tomlkit   # 切换时保留 plugins/mcp_servers 字段" >&2
+    fi
+    echo >&2
+fi
+
+if [[ "$HAS_TOML" -eq 1 && "$HAS_TOMLKIT" -eq 0 ]]; then
+    echo "提示：未安装 tomlkit，切换平台时不会保留 plugins/mcp_servers 字段（可选安装：python3 -m pip install --user tomlkit）"
 fi
 
 # ============================================================
@@ -166,20 +189,40 @@ fi
 # ============================================================
 # 冒烟测试：用临时空配置目录验证，不触碰真实配置
 # ============================================================
-echo "==> 冒烟测试（临时配置目录）..."
+echo "==> 冒烟测试（临时配置目录，不会触碰真实配置）..."
 TEST_DIR="$(mktemp -d)"
+smoke_ok=1
+
+# 1) 基础可用性：list 属于纯本地命令，任何情况下都必须能跑
 if CCR_CONFIG_DIR="$TEST_DIR" "$BIN_DIR/ccfg" list >/dev/null 2>&1; then
-    echo "    通过：ccfg list 可以正常运行。"
-    smoke_ok=1
+    echo "    通过：ccfg list 可正常运行。"
 else
-    echo "    失败：ccfg list 运行出错，请检查 python3 环境。" >&2
+    echo "    失败：ccfg list 运行出错。" >&2
+    CCR_CONFIG_DIR="$TEST_DIR" "$BIN_DIR/ccfg" list >&2 || true
     smoke_ok=0
+fi
+
+# 2) 依赖检查：需要 TOML 的命令（help 总是可用，用 add --help 触发解析器）
+if [[ "$smoke_ok" -eq 1 ]] && [[ "$HAS_TOML" -eq 1 ]]; then
+    echo "    通过：TOML 依赖可用（status/add/use 等命令可正常工作）。"
+elif [[ "$smoke_ok" -eq 1 ]]; then
+    echo "    注意：缺少 TOML 解析库，status/add/use/model 等命令暂不可用（安装方法见上方警告）。" >&2
 fi
 rm -rf "$TEST_DIR"
 
 if [[ "$smoke_ok" -ne 1 ]]; then
+    echo >&2
+    echo "安装未完成：基础冒烟测试失败。" >&2
     exit 1
 fi
+
+# ============================================================
+# PATH 检测：确保用户装完就能直接用 ccfg
+# ============================================================
+path_ok=0
+case ":$PATH:" in
+    *":$BIN_DIR:"*) path_ok=1 ;;
+esac
 
 # ============================================================
 # 完成
@@ -190,14 +233,34 @@ cat <<EOF
 
   命令：$BIN_DIR/ccfg
   目录：$PREFIX
+EOF
+
+if [[ "$path_ok" -eq 0 ]]; then
+    cat <<EOF
+
+⚠️  $BIN_DIR 不在当前 PATH 中，直接输入 ccfg 会提示 command not found。
+    执行下面这行即可（对当前及以后的新终端生效）：
+
+      echo 'export PATH="$BIN_DIR:\$PATH"' >> ~/.bashrc && source ~/.bashrc
+
+    在此之前可以先这样调用：$BIN_DIR/ccfg list
+EOF
+fi
+
+cat <<EOF
 
 快速开始：
   $BIN_DIR/ccfg list        # 查看已有分组
-  $BIN_DIR/ccfg status      # 刷新全部平台的额度与可用模型
+  $BIN_DIR/ccfg add <分组名> --base-url <URL>   # 新建分组（首次使用从这里开始）
+  $BIN_DIR/ccfg status      # 刷新平台的额度与可用模型
   $BIN_DIR/ccfg help        # 查看全部命令
 
 配置目录：默认 \$HOME/.codex，可用环境变量覆盖：
-  CCR_CONFIG_DIR=/path/to/config $BIN_DIR/ccfg cc
+  CCR_CONFIG_DIR=/path/to/config $BIN_DIR/ccfg list
+
+首次使用：配置目录为空时，先创建一个分组
+  $BIN_DIR/ccfg add <分组名> --base-url https://api.example.com/v1
+  （会以不回显的方式提示输入 API Key；成功后再运行 status 查看额度）
 
 安全提示：
   - 不要在交互 shell 里用 --api-key 传密钥，它会留在 shell 历史中。
