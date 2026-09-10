@@ -217,12 +217,62 @@ if [[ "$smoke_ok" -ne 1 ]]; then
 fi
 
 # ============================================================
-# PATH 检测：确保用户装完就能直接用 ccfg
+# PATH 检测与引导：确保装完就能直接用 ccfg（而不是敲完整路径）
 # ============================================================
 path_ok=0
 case ":$PATH:" in
     *":$BIN_DIR:"*) path_ok=1 ;;
 esac
+
+path_line="export PATH=\"$BIN_DIR:\$PATH\""
+path_fixed=0
+
+if [[ "$path_ok" -eq 0 ]]; then
+    # 已有的 shell 配置文件中是否已经写过（只是当前 shell 未生效）
+    already_configured=0
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
+        if [[ -f "$rc" ]] && grep -qF "$BIN_DIR" "$rc" 2>/dev/null; then
+            already_configured=1
+            configured_in="$rc"
+            break
+        fi
+    done
+
+    if [[ "$already_configured" -eq 1 ]]; then
+        # 已写入配置文件，只是当前终端未重新加载
+        echo
+        echo "==> $BIN_DIR 已配置在 $configured_in 中，但当前终端尚未生效。"
+        echo "    请运行下面这行让它在当前终端立即生效："
+        echo
+        echo "      source $configured_in"
+        echo
+    else
+        # 选择要写入的配置文件：优先当前 shell 的 rc 文件
+        case "${SHELL:-}" in
+            */zsh) target_rc="$HOME/.zshrc" ;;
+            *) target_rc="$HOME/.bashrc" ;;
+        esac
+
+        echo
+        echo "==> 检测到 $BIN_DIR 不在 PATH 中，正在为你配置（写入 $target_rc）..."
+        {
+            echo ""
+            echo "# added by ccfg-monitor install.sh"
+            echo "$path_line"
+        } >> "$target_rc" 2>/dev/null && {
+            echo "    已写入：$target_rc"
+            path_fixed=1
+        } || {
+            echo "    写入失败（$target_rc 不可写），请手动添加下面这行："
+            echo "      $path_line"
+            path_fixed=0
+        }
+
+        # 让当前 shell 立即生效（仅影响本次安装脚本进程的后续输出，用户需自行 source）
+        export PATH="$BIN_DIR:$PATH"
+        path_ok=1
+    fi
+fi
 
 # ============================================================
 # 完成
@@ -235,37 +285,31 @@ cat <<EOF
   目录：$PREFIX
 EOF
 
-if [[ "$path_ok" -eq 0 ]]; then
+if [[ "$path_fixed" -eq 1 ]]; then
     cat <<EOF
 
-⚠️  $BIN_DIR 不在当前 PATH 中，直接输入 ccfg 会提示 command not found。
-    执行下面这行即可（对当前及以后的新终端生效）：
+⚠️  首次使用前，请先让 PATH 配置生效（二选一）：
 
-      echo 'export PATH="$BIN_DIR:\$PATH"' >> ~/.bashrc && source ~/.bashrc
-
-    在此之前可以先这样调用：$BIN_DIR/ccfg list
+      source $target_rc        # 当前终端立即生效
+      重开一个终端              # 新终端自动生效
 EOF
 fi
 
 cat <<EOF
 
 快速开始：
-  $BIN_DIR/ccfg list        # 查看已有分组
-  $BIN_DIR/ccfg add <分组名> --base-url <URL>   # 新建分组（首次使用从这里开始）
-  $BIN_DIR/ccfg status      # 刷新平台的额度与可用模型
-  $BIN_DIR/ccfg help        # 查看全部命令
+  ccfg add <分组名> --base-url <URL>   # 新建分组（首次使用从这里开始）
+  ccfg list                            # 查看已有分组
+  ccfg status                          # 刷新额度与可用模型
+  ccfg help                            # 查看全部命令
 
-配置目录：默认 \$HOME/.codex，可用环境变量覆盖：
-  CCR_CONFIG_DIR=/path/to/config $BIN_DIR/ccfg list
-
-首次使用：配置目录为空时，先创建一个分组
-  $BIN_DIR/ccfg add <分组名> --base-url https://api.example.com/v1
-  （会以不回显的方式提示输入 API Key；成功后再运行 status 查看额度）
+配置目录默认 \$HOME/.codex；如需指定其他目录：
+  CCR_CONFIG_DIR=/path/to/config ccfg list
 
 安全提示：
-  - 不要在交互 shell 里用 --api-key 传密钥，它会留在 shell 历史中。
-    推荐运行 $BIN_DIR/ccfg add <分组名> 后按提示输入，或配合 read -s 使用。
+  - 不要在交互 shell 里用 --api-key 传密钥（会留在 shell 历史中），
+    直接运行 ccfg add <分组名> 按提示输入即可，密钥不回显。
   - 认证文件以 600 权限保存在配置目录，仅用于 Authorization 请求头。
-  - 更新本工具：重新下载仓库后再次运行 ./install.sh 即可覆盖升级。
-  - 卸载：$0 --uninstall
+  - 更新：git pull 后重新运行 ./install.sh
+  - 卸载：./install.sh --uninstall
 EOF

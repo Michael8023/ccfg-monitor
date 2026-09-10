@@ -129,7 +129,7 @@ cd ccfg-monitor
 - 核心文件复制到 `~/.local/share/ccfg-monitor`（可用 `--prefix DIR` 或 `CCFG_PREFIX` 覆盖）
 - 在 `~/.local/bin` 创建 `ccfg` 软链接（可用 `--bin-dir DIR` 或 `CCFG_BIN_DIR` 覆盖）
 - 冒烟测试使用临时空配置目录，**不会触碰你的真实配置**
-- **自动检测 PATH**：若 `~/.local/bin` 不在 `PATH` 中，安装结束会给出可直接复制的配置命令
+- **自动配置 PATH**：若 `~/.local/bin` 不在 `PATH` 中，安装脚本会自动写入 `~/.bashrc`（zsh 为 `~/.zshrc`）并提示 `source` 生效，之后直接输入 `ccfg` 即可；已配置过则不会重复写入
 - 卸载：`./install.sh --uninstall`（只删除软链接与安装目录，保留 `~/.codex` 下的配置与分组）
 
 **更新**：`git pull` 后重新运行 `./install.sh` 即可原地升级。
@@ -151,7 +151,8 @@ ccfg status
 ccfg use my_group
 ```
 
-> 如果 `ccfg` 提示 `command not found`，说明 `~/.local/bin` 不在 `PATH` 中：
+> 正常情况下 `install.sh` 已自动配置好 `PATH`，直接输入 `ccfg` 即可。
+> 若提示 `command not found`（当时选择了不自动配置，或配置文件不可写），手动添加：
 > ```bash
 > echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 > ```
